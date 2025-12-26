@@ -68,24 +68,27 @@ st.markdown("### 🔐 New User? Register Here")
 with st.expander("Click to open registration form", expanded=True):
     with st.form("register_form"):
         st.write("Create your account to apply")
+
         reg_username = st.text_input("Username (used for login)")
         reg_name = st.text_input("Full Name")
         reg_password = st.text_input("Password", type="password")
+
         submit = st.form_submit_button("Register")
 
         if submit:
             if not reg_username or not reg_name or not reg_password:
                 st.warning("Please fill all fields")
+
             elif reg_username in config["credentials"]["usernames"]:
                 st.error("Username already exists")
+
             else:
                 try:
-                    # ✅ LEGACY HASHING (COMPATIBLE)
-                    hashed_password = stauth.Hasher.hash(reg_password)
-
+                    # CORRECT HASHING (working in latest version)
+                    hashed_passwords = stauth.Hasher([reg_password]).generate()
                     config["credentials"]["usernames"][reg_username] = {
                         "name": reg_name,
-                        "password": hashed_password,
+                        "password": hashed_passwords[0],
                     }
 
                     with open(CREDENTIALS_FILE, "w") as f:
@@ -96,7 +99,7 @@ with st.expander("Click to open registration form", expanded=True):
                     st.rerun()
 
                 except Exception as e:
-                    st.error_toggle = st.error(f"Registration failed: {e}")
+                    st.error(f"Registration failed: {e}")
 
 # ---------------- AUTH STATUS ----------------
 if authentication_status is False:
@@ -111,11 +114,14 @@ else:
     authenticator.logout("Logout", location="sidebar")
 
     st.markdown("### 📄 Upload Your Resume")
+
     st.info(
         f"**Required Skills:** {', '.join(DEFAULT_KEYWORDS) if DEFAULT_KEYWORDS else 'Any relevant skills'}"
     )
 
-    uploaded_file = st.file_uploader("Choose your resume (PDF only)", type="pdf")
+    uploaded_file = st.file_uploader(
+        "Choose your resume (PDF only)", type="pdf"
+    )
 
     if uploaded_file and st.button(
         "Submit Application 🚀",
@@ -124,13 +130,14 @@ else:
     ):
         with st.spinner("🔄 AI is analyzing your resume..."):
             text = ""
+
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
                     if page.extract_text():
                         text += page.extract_text() + "\n"
 
-            # ✅ STABLE MODEL
-            model = genai.GenerativeModel("gemini-pro")
+            # FIXED MODEL NAME
+            model = genai.GenerativeModel("gemini-1.5-flash")  # <-- Correct model
 
             prompt = f"""
 Extract strictly valid JSON only:
@@ -149,6 +156,7 @@ Resume text:
                     .strip()
                 )
                 data = json.loads(cleaned)
+
             except Exception:
                 st.warning("AI parsing partial — using fallback")
                 data = {
@@ -196,6 +204,7 @@ Resume text:
 
             # EMAIL
             candidate_email = data.get("email", "").strip()
+
             if candidate_email and SENDER_EMAIL and APP_PASSWORD:
                 try:
                     msg = MIMEMultipart()
@@ -219,9 +228,12 @@ HR Team
                     server.starttls()
                     server.login(SENDER_EMAIL, APP_PASSWORD)
                     server.sendmail(
-                        SENDER_EMAIL, candidate_email, msg.as_string()
+                        SENDER_EMAIL,
+                        candidate_email,
+                        msg.as_string()
                     )
                     server.quit()
+
                 except Exception:
                     st.info("Email sending skipped")
 
