@@ -12,7 +12,7 @@ import yaml
 from yaml.loader import SafeLoader
 import json
 
-# ---------------- LOAD ENV ----------------
+# ================= ENV =================
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -27,42 +27,47 @@ DEFAULT_KEYWORDS = [
     ).split(",")
 ]
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    st.error("Gemini API Key not found in .env file!")
+if not GEMINI_API_KEY:
+    st.error("❌ Gemini API Key missing")
     st.stop()
 
+genai.configure(api_key=GEMINI_API_KEY)
+
+# ================= FILES =================
 EXCEL_FILE = "submitted_resumes.xlsx"
 CREDENTIALS_FILE = "credentials.yaml"
 
-# ---------------- CREDENTIALS INIT ----------------
+# ================= INIT CREDENTIALS =================
 if not os.path.exists(CREDENTIALS_FILE):
     with open(CREDENTIALS_FILE, "w") as f:
         yaml.dump({"credentials": {"usernames": {}}}, f)
 
-with open(CREDENTIALS_FILE) as f:
-    config = yaml.load(f, Loader=SafeLoader)
+# ================= LOAD AUTH =================
+def load_authenticator():
+    with open(CREDENTIALS_FILE) as f:
+        config = yaml.load(f, Loader=SafeLoader)
 
-# ---------------- AUTH ----------------
-authenticator = stauth.Authenticate(
-    config["credentials"],
-    "job_portal_cookie",
-    "random_key_12345",
-    cookie_expiry_days=30,
-)
+    authenticator = stauth.Authenticate(
+        config["credentials"],
+        "job_portal_cookie",
+        "random_key_12345",
+        cookie_expiry_days=30,
+    )
+    return authenticator, config
 
-# ---------------- UI ----------------
+authenticator, config = load_authenticator()
+
+# ================= UI =================
 st.title("🚀 Job Application Portal")
 
-# LOGIN
+# ================= LOGIN =================
 authenticator.login(location="main")
 
-authentication_status = st.session_state.get("authentication_status")
+auth_status = st.session_state.get("authentication_status")
 name = st.session_state.get("name")
 username = st.session_state.get("username")
 
-# ---------------- REGISTER ----------------
+# ================= REGISTER =================
 st.markdown("### 🔐 New User? Register Here")
 
 with st.expander("Click to open registration form", expanded=True):
@@ -73,92 +78,87 @@ with st.expander("Click to open registration form", expanded=True):
         reg_name = st.text_input("Full Name")
         reg_password = st.text_input("Password", type="password")
 
-        submit = st.form_submit_button("Register")
+        register_btn = st.form_submit_button("Register")
 
-        if submit:
+        if register_btn:
             if not reg_username or not reg_name or not reg_password:
-                st.warning("Please fill all fields")
+                st.warning("⚠️ Please fill all fields")
 
             elif reg_username in config["credentials"]["usernames"]:
-                st.error("Username already exists")
+                st.error("❌ Username already exists")
 
             else:
                 try:
-                    # CORRECT HASHING (working in latest version)
-                    hashed_passwords = stauth.Hasher([reg_password]).generate()
+                    # ✅ CORRECT HASHING FOR YOUR VERSION
+                    hashed_pw = stauth.Hasher(
+                        [reg_password]
+                    ).generate()[0]
+
                     config["credentials"]["usernames"][reg_username] = {
                         "name": reg_name,
-                        "password": hashed_passwords[0],
+                        "password": hashed_pw,
                     }
 
                     with open(CREDENTIALS_FILE, "w") as f:
                         yaml.dump(config, f)
 
-                    st.success(f"Account created successfully for {reg_name}! 🎉")
-                    st.info("You can now login using your username and password.")
+                    st.success("🎉 Registration successful!")
+                    st.info("🔄 Reloading app...")
+
+                    # CRITICAL
+                    st.session_state.clear()
                     st.rerun()
 
                 except Exception as e:
                     st.error(f"Registration failed: {e}")
 
-# ---------------- AUTH STATUS ----------------
-if authentication_status is False:
-    st.error("Username or password is incorrect")
+# ================= AUTH STATUS =================
+if auth_status is False:
+    st.error("❌ Username or password is incorrect")
 
-elif authentication_status is None:
-    st.warning("Please enter your username and password above")
+elif auth_status is None:
+    st.warning("ℹ️ Please login above")
 
 else:
-    # ---------------- LOGGED IN ----------------
-    st.success(f"Welcome back, {name}! 🎉")
+    # ================= LOGGED IN =================
+    st.success(f"Welcome {name}! 🎉")
     authenticator.logout("Logout", location="sidebar")
 
     st.markdown("### 📄 Upload Your Resume")
 
-    st.info(
-        f"**Required Skills:** {', '.join(DEFAULT_KEYWORDS) if DEFAULT_KEYWORDS else 'Any relevant skills'}"
-    )
+    st.info(f"Required Skills: {', '.join(DEFAULT_KEYWORDS)}")
 
     uploaded_file = st.file_uploader(
-        "Choose your resume (PDF only)", type="pdf"
+        "Upload PDF resume", type="pdf"
     )
 
-    if uploaded_file and st.button(
-        "Submit Application 🚀",
-        type="primary",
-        use_container_width=True,
-    ):
-        with st.spinner("🔄 AI is analyzing your resume..."):
+    if uploaded_file and st.button("Submit Application 🚀"):
+        with st.spinner("🔄 AI analyzing resume..."):
             text = ""
 
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
                     if page.extract_text():
-                        text += page.extract_text() + "\n"
+                        text += page.extract_text()
 
-            # FIXED MODEL NAME
-            model = genai.GenerativeModel("gemini-1.5-flash")  # <-- Correct model
+            model = genai.GenerativeModel("gemini-1.5-flash")
 
             prompt = f"""
-Extract strictly valid JSON only:
+Extract ONLY valid JSON:
 {{"name":"","email":"","phone":"","skills":[],"experience":""}}
 
-Resume text:
 {text[:15000]}
 """
             response = model.generate_content(prompt)
 
             try:
                 cleaned = (
-                    response.text.strip()
-                    .removeprefix("```json")
-                    .removesuffix("```")
+                    response.text.replace("```json", "")
+                    .replace("```", "")
                     .strip()
                 )
                 data = json.loads(cleaned)
-
             except Exception:
-                st.warning("AI parsing partial — using fallback")
                 data = {
                     "name": name,
                     "email": "",
@@ -167,8 +167,8 @@ Resume text:
                     "experience": "",
                 }
 
-            skills_lower = [s.lower() for s in data.get("skills", [])]
-            exp_lower = data.get("experience", "").lower()
+            skills_lower = [s.lower() for s in data["skills"]]
+            exp_lower = data["experience"].lower()
 
             matched = [
                 kw for kw in DEFAULT_KEYWORDS
@@ -180,19 +180,17 @@ Resume text:
                 if DEFAULT_KEYWORDS else True
             )
 
-            save_data = {
+            save_row = {
                 "candidate_name": name,
                 "username": username,
-                "extracted_name": data.get("name", ""),
-                "email": data.get("email", ""),
-                "phone": data.get("phone", ""),
-                "skills": ", ".join(data.get("skills", [])),
-                "experience": data.get("experience", ""),
+                "email": data["email"],
+                "skills": ", ".join(data["skills"]),
+                "experience": data["experience"],
                 "matched_keywords": ", ".join(matched),
                 "shortlisted": "Yes" if shortlisted else "No",
             }
 
-            df_new = pd.DataFrame([save_data])
+            df_new = pd.DataFrame([save_row])
 
             if os.path.exists(EXCEL_FILE):
                 df_old = pd.read_excel(EXCEL_FILE)
@@ -202,24 +200,20 @@ Resume text:
 
             df.to_excel(EXCEL_FILE, index=False)
 
-            # EMAIL
-            candidate_email = data.get("email", "").strip()
-
-            if candidate_email and SENDER_EMAIL and APP_PASSWORD:
+            # ================= EMAIL =================
+            if data["email"] and SENDER_EMAIL and APP_PASSWORD:
                 try:
                     msg = MIMEMultipart()
                     msg["From"] = SENDER_EMAIL
-                    msg["To"] = candidate_email
-                    msg["Subject"] = "Application Received - Thank You!"
+                    msg["To"] = data["email"]
+                    msg["Subject"] = "Application Received"
 
-                    body = f"""Dear {data.get('name', name)},
+                    body = f"""Dear {data['name']},
 
-Thank you for applying!
-We have successfully received your resume.
+Your application has been received successfully.
+We will get back to you soon.
 
-Our team will get back to you soon.
-
-Best regards,
+Regards,
 HR Team
 """
                     msg.attach(MIMEText(body, "plain"))
@@ -227,19 +221,13 @@ HR Team
                     server = smtplib.SMTP("smtp.gmail.com", 587)
                     server.starttls()
                     server.login(SENDER_EMAIL, APP_PASSWORD)
-                    server.sendmail(
-                        SENDER_EMAIL,
-                        candidate_email,
-                        msg.as_string()
-                    )
+                    server.send_message(msg)
                     server.quit()
-
                 except Exception:
-                    st.info("Email sending skipped")
+                    pass
 
         st.balloons()
         st.success("✅ Application Submitted Successfully!")
-        st.info("We will get back to you soon 🙌")
 
         if os.path.exists(EXCEL_FILE):
             with open(EXCEL_FILE, "rb") as f:
@@ -250,6 +238,6 @@ HR Team
                     use_container_width=True,
                 )
 
-# ---------------- FOOTER ----------------
+# ================= FOOTER =================
 st.markdown("---")
-st.caption("Built with ❤️ using Streamlit & Google Gemini AI")
+st.caption("Built with ❤️ using Streamlit & Gemini AI")
